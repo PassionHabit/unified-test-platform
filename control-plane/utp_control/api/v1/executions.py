@@ -67,6 +67,22 @@ def submit_execution(
     caller = body.caller or CallerInfo()
     caller_scope = f"{caller.type}:{caller.run_ref or 'adhoc'}"
 
+    # M3：版本解析固化（branch/tag → 精确 commit / svn revision）。
+    # 尽力而为：解析失败保留原值并记事件——仓库暂不可达不应阻塞排队；
+    # 快照阶段会真实拉取并显式失败（SOURCE_FETCH_FAILED），不吞错误。
+    source_revision = body.source_revision
+    revision_note = None
+    source_resolved = False
+    try:
+        from ... import source_manager
+
+        source_revision = source_manager.resolve_revision(
+            project.source_type, project.repository_ref, body.source_revision
+        )
+        source_resolved = True
+    except Exception as exc:  # noqa: BLE001
+        revision_note = f"resolve failed, kept raw: {str(exc)[:150]}"
+
     if idempotency_key:
         existing = db.execute(
             select(Execution).where(
@@ -89,11 +105,12 @@ def submit_execution(
         caller_scope=caller_scope,
         request_id=request_id,
         priority=body.priority,
-        source_revision=body.source_revision,
+        source_revision=source_revision,
         context_json={
             "parameters": body.parameters,
             "caller": caller.model_dump(),
             "callback_ref": body.callback_ref,
+            "source_resolved": source_resolved,
         },
         timeout_seconds=body.timeout_seconds or profile.timeout_default,
         pipeline_run_ref=caller.run_ref,
@@ -104,7 +121,8 @@ def submit_execution(
         db,
         execution.id,
         EventType.EXECUTION_CREATED.value,
-        {"source_revision": body.source_revision, "profile": profile.name},
+        {"source_revision": source_revision, "profile": profile.name,
+         **({"revision_note": revision_note} if revision_note else {})},
     )
     db.commit()
     db.refresh(execution)

@@ -10,7 +10,7 @@ from .execution import (
 )
 from .infra import NodeEnrollmentToken, ResourceReservation, WorkerNode
 from .org import Department, ExecutionProfile, Project, RuntimeImage
-from .services import ServiceCatalog, ServiceInvocation
+from .services import SecretRef, ServiceCatalog, ServiceInvocation
 
 __all__ = [
     "Base",
@@ -31,4 +31,5 @@ __all__ = [
     "LogManifest",
     "ServiceCatalog",
     "ServiceInvocation",
+    "SecretRef",
 ]

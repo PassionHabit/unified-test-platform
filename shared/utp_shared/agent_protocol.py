@@ -39,6 +39,7 @@ class AttemptSpec(BaseModel):
     workspace_dir: str = "/workspace"
     artifacts_dir: str = "/artifacts"
     deadline_at: Optional[datetime] = None
+    snapshot_key: Optional[str] = None  # 源码快照对象 key；None = 无源码
 
     model_config = {"extra": "forbid"}
 

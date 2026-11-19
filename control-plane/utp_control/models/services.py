@@ -27,6 +27,20 @@ class ServiceCatalog(Base, CreatedAtMixin):
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
 
 
+class SecretRef(Base, CreatedAtMixin):
+    """秘密引用（M3）：值加密存储；仅经 env 注入。"""
+
+    __tablename__ = "secret_refs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(sa.String(100), unique=True, nullable=False)
+    value_encrypted: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    department_id: Mapped[Optional[int]] = mapped_column(
+        sa.ForeignKey("departments.id"), nullable=True
+    )
+    created_by: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
+
+
 class ServiceInvocation(Base, CreatedAtMixin):
     __tablename__ = "service_invocations"
 

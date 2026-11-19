@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     heartbeat_stale_s: int = 90
     lost_grace_s: int = 3600
     reconcile_enabled: bool = True
+    # 秘密引用加密键（M3）；生产必须显式设置
+    secret_key: str = ""
 
 
 @lru_cache

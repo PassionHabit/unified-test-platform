@@ -155,6 +155,20 @@ def finalize_execution(
         ExecutionStatus.FINALIZING.value,
         ExecutionStatus.CANCELLING.value,
     ):
+        if infra_failure and execution.status in (
+            ExecutionStatus.PREPARING.value,
+            ExecutionStatus.STARTING.value,
+            ExecutionStatus.RECONCILING.value,
+        ):
+            # 尚未真正运行：直接进 FAILED（PREPARING/STARTING/RECONCILING 均可达）
+            assert_execution_transition(execution.status, ExecutionStatus.FAILED.value)
+            execution.status = ExecutionStatus.FAILED.value
+            execution.failure_reason = infra_failure
+            execution.ended_at = now
+            release_reservation(db, attempt)
+            _event(db, execution.id, EventType.EXECUTION_FINALIZED.value, {"status": execution.status})
+            db.commit()
+            return
         # RUNNING/STARTING/PREPARING → FINALIZING
         assert_execution_transition(execution.status, ExecutionStatus.FINALIZING.value)
         execution.status = ExecutionStatus.FINALIZING.value
@@ -175,6 +189,20 @@ def finalize_execution(
     attempt.ended_at = attempt.ended_at or now
     _event(db, execution.id, EventType.EXECUTION_FINALIZED.value, {"status": execution.status})
     db.commit()
+
+    # after 服务与 during 清理（尽力而为，不改变终态）
+    try:
+        from . import services_runtime
+        from .models import ExecutionProfile
+
+        profile = db.query(ExecutionProfile).filter(
+            ExecutionProfile.project_id == execution.project_id,
+            ExecutionProfile.name == execution.profile_name,
+        ).first()
+        bindings = (profile.service_bindings or {}).get("bindings", []) if profile and profile.service_bindings else []
+        services_runtime.run_after_services(db, execution, bindings)
+    except Exception:
+        pass
 
 
 def apply_attempt_report(db: Session, report) -> dict:

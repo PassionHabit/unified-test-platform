@@ -70,7 +70,9 @@ def poll(body: PollRequest, db: Session = Depends(get_db)) -> PollResponse:
     )
     if slots > 0:
         for spec in claim_for_node(db, node, limit=slots):
-            assignments.append(AttemptSpec.model_validate(spec))
+            prepared = _prepare_assignment(db, spec)
+            if prepared is not None:
+                assignments.append(prepared)
 
     # 取消指令：本节点上 CANCELLING 执行的活跃 attempt
     commands: List[ControlCommand] = []
@@ -95,6 +97,35 @@ def poll(body: PollRequest, db: Session = Depends(get_db)) -> PollResponse:
     return PollResponse(assignments=assignments, commands=commands, poll_after_s=3)
 
 
+def _prepare_assignment(db: Session, spec: dict) -> Optional[AttemptSpec]:
+    """领取后、下发前：before 公共服务（失败阻断）+ during 服务启动。"""
+    from ... import services_runtime
+    from ...execution_service import finalize_execution, release_reservation
+    from ...models import Execution, ExecutionAttempt, ExecutionProfile, Project
+    from utp_shared.states import AttemptStatus, FailureReason
+
+    execution = db.get(Execution, int(spec["execution_id"]))
+    attempt = db.get(ExecutionAttempt, int(spec["attempt_id"]))
+    profile = db.query(ExecutionProfile).filter(
+        ExecutionProfile.project_id == execution.project_id,
+        ExecutionProfile.name == execution.profile_name,
+    ).first()
+    bindings = (profile.service_bindings or {}).get("bindings", []) if profile and profile.service_bindings else []
+
+    try:
+        services_runtime.run_before_services(db, execution, bindings)
+    except Exception:
+        # before 失败且配置阻断：执行失败，attempt 取消，释放预留
+        attempt.status = AttemptStatus.CANCELLED.value
+        attempt.ended_at = _utcnow()
+        release_reservation(db, attempt)
+        finalize_execution(db, execution, attempt, infra_failure=FailureReason.SERVICE_BEFORE_FAILED.value)
+        return None
+
+    services_runtime.start_during_services(db, execution, bindings)
+    return AttemptSpec.model_validate(spec)
+
+
 @router.post("/attempts/{attempt_id}/status", summary="状态上报（幂等，驱动状态机）")
 def report_status(attempt_id: int, body: AttemptStatusReport, db: Session = Depends(get_db)) -> dict:
     result = apply_attempt_report(db, body)
@@ -109,6 +140,28 @@ class UploadUrlRequest(BaseModel):
 
 class UploadUrlResponse(BaseModel):
     urls: dict
+
+
+@router.get("/attempts/{attempt_id}/snapshot-url", summary="源码快照下载 URL（首次按需构建）")
+def snapshot_url(attempt_id: int, db: Session = Depends(get_db)) -> dict:
+    attempt = db.get(ExecutionAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="unknown attempt")
+    spec = attempt.spec_json or {}
+    key = spec.get("snapshot_key")
+    if not key:
+        raise HTTPException(status_code=404, detail="attempt has no snapshot")
+    from ... import source_manager
+    from ...models import Project, Execution
+
+    execution = db.get(Execution, attempt.execution_id)
+    project = db.get(Project, execution.project_id)
+    from ...storage import get_storage
+
+    storage = get_storage()
+    source_manager.ensure_snapshot(project.source_type, project.repository_ref,
+                                   execution.source_revision, storage)
+    return {"key": key, "url": storage.presign_get(key, expires_s=3600)}
 
 
 @router.post("/attempts/{attempt_id}/upload-urls", summary="申请短时效预签名 PUT")

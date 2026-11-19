@@ -55,12 +55,28 @@ def node_can_run(node: WorkerNode, profile: ExecutionProfile) -> bool:
     return node.cpu_reserved + cpu <= node.cpu_total and node.memory_reserved + mem <= node.memory_total
 
 
-def build_attempt_spec(execution: Execution, profile: ExecutionProfile, attempt_id: int) -> dict:
+def build_attempt_spec(execution: Execution, profile: ExecutionProfile, project: Project,
+                       attempt_id: int) -> dict:
     """不可变 spec（V2.1 §8）；命令数组直接取自 profile，敏感值仅 env。"""
+    from . import source_manager
+
     argv = list((profile.command_template or {}).get("argv", []))
     env = dict((execution.context_json or {}).get("parameters", {}).get("environment", {}))
+    env = _resolve_env_secrets(env)
     resources = profile.resource_spec or {}
     deadline = _utcnow() + timedelta(seconds=execution.timeout_seconds)
+    snapshot_key = None
+    if (
+        project.source_type in ("git", "svn")
+        and project.repository_ref
+        and (execution.context_json or {}).get("source_resolved")
+    ):
+        try:
+            snapshot_key = source_manager.snapshot_key(
+                project.source_type, project.repository_ref, execution.source_revision
+            )
+        except Exception:
+            snapshot_key = None
     return {
         "attempt_id": str(attempt_id),
         "execution_id": str(execution.id),
@@ -76,7 +92,32 @@ def build_attempt_spec(execution: Execution, profile: ExecutionProfile, attempt_
         "workspace_dir": "/workspace",
         "artifacts_dir": "/artifacts",
         "deadline_at": deadline.isoformat(),
+        "snapshot_key": snapshot_key,
     }
+
+
+def _resolve_env_secrets(env: dict) -> dict:
+    """参数中的 {"$secret": name} → SecretRef 明文（仅 env，不落库）。"""
+    from .models import SecretRef
+    from .secrets import decrypt, is_secret_ref, SecretError
+
+    def lookup(name: str) -> str:
+        from .db import get_sessionmaker
+
+        s = get_sessionmaker()()
+        try:
+            row = s.query(SecretRef).filter(SecretRef.name == name).first()
+            if row is None:
+                raise SecretError(f"secret '{name}' not found")
+            return decrypt(row.value_encrypted)
+        finally:
+            s.close()
+
+    if not any(is_secret_ref(v) for v in env.values()):
+        return env
+    from .secrets import resolve_secret_refs
+
+    return resolve_secret_refs(env, lookup)
 
 
 def _department_active_count(db: Session, department_id: int) -> int:
@@ -142,7 +183,7 @@ def claim_for_node(db: Session, node: WorkerNode, limit: int = 1) -> List[dict]:
         db.add(attempt)
         db.flush()  # 拿 attempt.id
 
-        spec = build_attempt_spec(execution, profile, attempt.id)
+        spec = build_attempt_spec(execution, profile, project, attempt.id)
         attempt.spec_json = spec
 
         cpu, mem = _resource_request(profile)

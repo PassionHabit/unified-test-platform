@@ -98,11 +98,12 @@ def _wait_port(port: int, timeout: float = 20.0) -> None:
     raise RuntimeError(f"port {port} not ready")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def e2e_stack():
     """独立数据库 + 真实 HTTP（uvicorn 线程）+ 真实 S3（moto 子进程）。
 
-    与契约测试完全隔离；拆栈后把缓存还原给原会话，避免污染后续模块。
+    module 级：每个 E2E 模块独立一套栈，用完即还原环境与缓存，
+    不与契约测试（session 库）互相污染。
     """
     import tempfile
     import threading
@@ -111,6 +112,10 @@ def e2e_stack():
     e2e_db = f"sqlite:///{tmp}/e2e.db"
     previous_db = os.environ.get("DATABASE_URL")
     s3_previous = {k: os.environ.get(k) for k in ("S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET")}
+
+    # 先切环境再迁移：env.py 里环境变量优先于 ini 的 url，
+    # 否则迁移会打到前一个模块留下的库上
+    os.environ["DATABASE_URL"] = e2e_db
 
     from alembic import command
     from alembic.config import Config
@@ -151,7 +156,6 @@ def e2e_stack():
 
     try:
         _wait_port(s3_port)
-        os.environ["DATABASE_URL"] = e2e_db
         os.environ["S3_ENDPOINT"] = f"http://127.0.0.1:{s3_port}"
         os.environ["S3_ACCESS_KEY"] = "test"
         os.environ["S3_SECRET_KEY"] = "test"

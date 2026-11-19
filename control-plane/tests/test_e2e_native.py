@@ -200,11 +200,19 @@ class TestNativeE2E:
 
     def test_duplicate_poll_same_agent_no_double_assign(self, api, demo_project):
         """两次提交 + 单节点单槽：一次 poll 只领一个，第二次 poll 领第二个。"""
-        api.post("/api/v1/executions", json={"project_id": "e2e-native", "source_revision": "m", "caller": {"type": "human"}})
-        api.post("/api/v1/executions", json={"project_id": "e2e-native", "source_revision": "m", "caller": {"type": "human"}})
+        r1 = api.post("/api/v1/executions", json={"project_id": "e2e-native", "source_revision": "m", "caller": {"type": "human"}})
+        r2 = api.post("/api/v1/executions", json={"project_id": "e2e-native", "source_revision": "m", "caller": {"type": "human"}})
         first = _agent_poll(api, agent_id="serial-agent")
         ids1 = [a["attempt_id"] for a in first["assignments"]]
         assert len(ids1) == 1  # native 单槽
         second = _agent_poll(api, agent_id="serial-agent", running=ids1)
         ids2 = [a["attempt_id"] for a in second["assignments"]]
         assert len(ids2) == 0  # 槽占满，不重复分配
+        # 清理：取消未被领取的排队任务 + 终止已领取的，避免污染后续模块
+        for resp in (r1, r2):
+            eid = resp.json()["id"]
+            api.post(f"/api/v1/executions/{eid}/cancel")
+        for status in ("STARTING", "RUNNING", "CANCELLED"):
+            api.post(f"/agent/v1/attempts/{ids1[0]}/status", json={
+                "report_id": f"cleanup-{status}", "attempt_id": ids1[0],
+                "execution_id": first["assignments"][0]["execution_id"], "status": status})

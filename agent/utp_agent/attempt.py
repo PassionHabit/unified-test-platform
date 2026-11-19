@@ -60,6 +60,7 @@ class AttemptRunner:
         os.makedirs(self.workspace, exist_ok=True)
         os.makedirs(self.artifacts, exist_ok=True)
         self._write_context()
+        self._fetch_snapshot()
         _report(self.client, self.spec.attempt_id, self.spec.execution_id, AttemptStatus.STARTING)
 
         stdout = ChunkedLogUploader(self.client, self.spec.attempt_id, self.spec.execution_id,
@@ -139,6 +140,32 @@ class AttemptRunner:
                 self.cancel_event.set()
                 return
             time.sleep(min(5, max(0.5, remaining / 4)))
+
+    # ---- 源码快照（M3）：下载并解压到 workspace ----
+    def _fetch_snapshot(self) -> None:
+        if not getattr(self.spec, "snapshot_key", None):
+            return
+        try:
+            http = httpx.Client(trust_env=False, timeout=600)
+            try:
+                info = http.get(
+                    f"{self.client.base_url}/agent/v1/attempts/{self.spec.attempt_id}/snapshot-url"
+                )
+                info.raise_for_status()
+                url = info.json()["url"]
+                tar_path = os.path.join(self.workdir, "snapshot.tar.gz")
+                with http.stream("GET", url) as dl:
+                    with open(tar_path, "wb") as fh:
+                        for chunk in dl.iter_bytes(1 << 20):
+                            fh.write(chunk)
+            finally:
+                http.close()
+            import tarfile
+
+            with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(self.workspace)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"snapshot fetch failed: {exc!r}") from exc
 
     # ---- 产物 ----
     def _write_context(self) -> None:
