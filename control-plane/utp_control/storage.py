@@ -38,9 +38,13 @@ class ObjectStorage:
             access_key=s.s3_access_key,
             secret_key=s.s3_secret_key,
             secure=secure,
+            region=s.s3_region,
         )
+        self._bucket_ready = False
 
     def ensure_bucket(self) -> None:
+        if self._bucket_ready:
+            return
         from minio.error import S3Error
 
         try:
@@ -49,11 +53,14 @@ class ObjectStorage:
             # 已存在视为成功（bucket_exists 的 HeadBucket 在部分 S3 实现上不兼容）
             if exc.code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
                 raise
+        self._bucket_ready = True
 
     def presign_put(self, key: str, expires_s: int = 3600) -> str:
+        self.ensure_bucket()
         return self._client.presigned_put_object(self.bucket, key, timedelta(seconds=expires_s))
 
     def presign_get(self, key: str, expires_s: int = 3600) -> str:
+        self.ensure_bucket()
         return self._client.presigned_get_object(self.bucket, key, timedelta(seconds=expires_s))
 
     def get_bytes(self, key: str) -> bytes:

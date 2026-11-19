@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     s3_access_key: str = ""
     s3_secret_key: str = ""
     s3_bucket: str = "utp"
+    s3_region: str = "us-east-1"
     # Agent 长轮询返回前最长挂起秒数（M0 立即返回）
     agent_long_poll_s: int = 30
     default_max_timeout_s: int = 172800  # 48h

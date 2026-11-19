@@ -11,3 +11,5 @@ node_modules/
 *.db
 dev.db
 .coverage
+web/node_modules/
+web/dist/

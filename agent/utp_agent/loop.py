@@ -10,11 +10,37 @@ from .client import ControlPlaneClient
 from .config import get_settings
 
 
+def detect_resources() -> "tuple[int, int]":
+    """本机资源自检：CPU 核数与物理内存 MB（macOS/Linux）。"""
+    import os
+    import platform
+
+    cpu = os.cpu_count() or 2
+    mem_mb = 0
+    try:
+        if platform.system() == "Darwin":
+            import subprocess
+
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+            mem_mb = int(out.stdout.strip()) // (1024 * 1024)
+        else:
+            page = os.sysconf("SC_PAGE_SIZE")
+            pages = os.sysconf("SC_PHYS_PAGES")
+            mem_mb = page * pages // (1024 * 1024)
+    except Exception:
+        mem_mb = 4096
+    return cpu, mem_mb
+
+
 def run(once: bool = False) -> None:
     settings = get_settings()
     client = ControlPlaneClient()
     labels = [x.strip() for x in settings.labels.split(",") if x.strip()]
-    print(f"[utp-agent] {settings.agent_name} mode={settings.node_type} -> {settings.control_url} labels={labels}")
+    cpu_total, mem_mb_total = detect_resources()
+    print(
+        f"[utp-agent] {settings.agent_name} mode={settings.node_type} -> {settings.control_url} "
+        f"labels={labels} cpu={cpu_total} mem={mem_mb_total}MB"
+    )
 
     runners: Dict[str, AttemptRunner] = {}
     lock = threading.Lock()
@@ -39,6 +65,8 @@ def run(once: bool = False) -> None:
                 agent_id=settings.agent_name,
                 node_type=settings.node_type,
                 labels=labels,
+                cpu_total=cpu_total,
+                memory_mb_total=mem_mb_total,
                 running_attempt_ids=running_ids,
             )
             for assignment in response.assignments:
