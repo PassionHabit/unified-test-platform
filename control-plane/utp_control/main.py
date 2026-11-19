@@ -29,7 +29,36 @@ async def lifespan(app: FastAPI):
         pass
     finally:
         session.close()
+
+    # 对账器后台线程（M2）：周期比对心跳/死线/排水期限
+    from .config import get_settings
+    from .reconciler import reconcile
+
+    settings = get_settings()
+    stop = {"flag": False}
+
+    def _loop():
+        import time
+
+        while not stop["flag"]:
+            time.sleep(max(1, settings.reconcile_interval_s))
+            try:
+                s = get_sessionmaker()()
+                try:
+                    reconcile(s)
+                finally:
+                    s.close()
+            except Exception:
+                pass  # 对账失败不影响服务；下轮重试
+
+    thread = None
+    if settings.reconcile_enabled:
+        import threading
+
+        thread = threading.Thread(target=_loop, daemon=True, name="utp-reconciler")
+        thread.start()
     yield
+    stop["flag"] = True
 
 
 def create_app() -> FastAPI:

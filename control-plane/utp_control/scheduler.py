@@ -1,19 +1,35 @@
-"""调度器：从持久化队列领取任务并构造不可变 AttemptSpec。
+"""调度器（M2）：持久化队列 + 部门公平轮询 + 部门并发配额 + 资源预留。
 
-PG 用 FOR UPDATE SKIP LOCKED 防并发重复领取；SQLite 写事务天然串行，
-同一事务内完成领取+预留，原子性等价（测试路径）。
-M1：单节点标签/容量过滤；M2 在此之上加部门公平与配额。
+领取事务（PG：FOR UPDATE SKIP LOCKED；SQLite：写事务天然串行）内完成：
+候选排序（部门最久未调度优先 → priority 降序 → 先来先服务）→ 配额检查 →
+标签/容量过滤 → 建 Attempt + 预留 + 部门时间戳推进，原子提交。
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import Execution, ExecutionAttempt, ExecutionProfile, Project, WorkerNode
+from .models import (
+    Department,
+    Execution,
+    ExecutionAttempt,
+    ExecutionProfile,
+    Project,
+    ResourceReservation,
+    WorkerNode,
+)
 from utp_shared.states import ExecutionStatus, assert_execution_transition
+
+ACTIVE_EXECUTION_STATUSES = [
+    ExecutionStatus.PREPARING.value,
+    ExecutionStatus.STARTING.value,
+    ExecutionStatus.RUNNING.value,
+    ExecutionStatus.RECONCILING.value,
+    ExecutionStatus.FINALIZING.value,
+]
 
 
 def _utcnow() -> datetime:
@@ -51,43 +67,69 @@ def build_attempt_spec(execution: Execution, profile: ExecutionProfile, attempt_
         "image": profile.runtime_image_ref,
         "argv": argv,
         "env": {str(k): str(v) for k, v in env.items()},
+        "prepare": profile.prepare_spec,
         "resources": {
             "cpu": resources.get("cpu", 1),
             "memory_mb": resources.get("memory_mb", 1024),
             "shm_mb": resources.get("shm_mb", 1024),
         },
+        "workspace_dir": "/workspace",
+        "artifacts_dir": "/artifacts",
         "deadline_at": deadline.isoformat(),
     }
 
 
+def _department_active_count(db: Session, department_id: int) -> int:
+    return (
+        db.execute(
+            select(func.count(Execution.id))
+            .join(Project, Execution.project_id == Project.id)
+            .where(
+                Project.department_id == department_id,
+                Execution.status.in_(ACTIVE_EXECUTION_STATUSES),
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
 def claim_for_node(db: Session, node: WorkerNode, limit: int = 1) -> List[dict]:
-    """领取最多 limit 个任务：建 Attempt、占资源、推进状态。同一事务内原子完成。"""
+    """领取最多 limit 个任务。部门公平 + 配额 + 过滤在同一事务内原子完成。"""
     if node.maintenance_state != "ACTIVE":
         return []
 
     stmt = (
-        select(Execution, ExecutionProfile)
+        select(Execution, ExecutionProfile, Project, Department)
         .join(Project, Execution.project_id == Project.id)
         .join(
             ExecutionProfile,
             (ExecutionProfile.project_id == Project.id)
             & (ExecutionProfile.name == Execution.profile_name),
         )
+        .join(Department, Project.department_id == Department.id)
         .where(Execution.status == ExecutionStatus.QUEUED.value)
-        .order_by(Execution.priority.desc(), Execution.created_at.asc(), Execution.id.asc())
-        .limit(50)
+        # 公平：最久未调度的部门优先（NULL 视为最旧）；同级 priority 高者优先；再按提交时间
+        .order_by(
+            Department.last_scheduled_at.asc().nulls_first(),
+            Execution.priority.desc(),
+            Execution.created_at.asc(),
+            Execution.id.asc(),
+        )
+        .limit(200)
     )
     if db.bind is not None and db.bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)
 
     rows = db.execute(stmt).all()
     specs: List[dict] = []
-    for execution, profile in rows:
+    now = _utcnow()
+    for execution, profile, project, department in rows:
         if len(specs) >= limit:
             break
-        if not node_can_run(node, profile):
+        if not profile.enabled or not node_can_run(node, profile):
             continue
-        if not profile.enabled:
+        # 部门并发配额
+        if _department_active_count(db, department.id) >= department.max_concurrent:
             continue
 
         attempt = ExecutionAttempt(
@@ -104,8 +146,6 @@ def claim_for_node(db: Session, node: WorkerNode, limit: int = 1) -> List[dict]:
         attempt.spec_json = spec
 
         cpu, mem = _resource_request(profile)
-        from .models import ResourceReservation
-
         db.add(
             ResourceReservation(
                 attempt_id=attempt.id, node_id=node.id, cpu=cpu, memory_mb=mem, state="active"
@@ -116,6 +156,9 @@ def claim_for_node(db: Session, node: WorkerNode, limit: int = 1) -> List[dict]:
 
         assert_execution_transition(execution.status, ExecutionStatus.PREPARING.value)
         execution.status = ExecutionStatus.PREPARING.value
+
+        # 部门公平指针推进
+        department.last_scheduled_at = now
         specs.append(spec)
     if specs:
         db.commit()

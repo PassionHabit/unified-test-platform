@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # Agent 长轮询返回前最长挂起秒数（M0 立即返回）
     agent_long_poll_s: int = 30
     default_max_timeout_s: int = 172800  # 48h
+    # 对账器（M2）：周期、心跳超时、LOST 收敛窗口
+    reconcile_interval_s: int = 15
+    heartbeat_stale_s: int = 90
+    lost_grace_s: int = 3600
+    reconcile_enabled: bool = True
 
 
 @lru_cache
