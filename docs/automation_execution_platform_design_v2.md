@@ -1,6 +1,6 @@
-# 自动化执行平台需求与详细设计（V2.0）
+# 自动化执行平台需求与详细设计（V2.1）
 
-> 状态：V1.0 评审修订版，作为实现基线。日期：2026-11-19。
+> 状态：V1.0 评审修订 + 业务功能需求补充版，作为实现基线。日期：2026-11-19。
 > 原则不变：复用既有设施；以可靠执行为核心；优先降低接入与运维成本。
 > V1.0 原文见 `automation_execution_platform_design_v1.md`（仅存档，不再维护）。
 
@@ -26,6 +26,12 @@
 | 16 | Profile 增加可选 `prepare` 步骤（装依赖类工程免改代码接入） | 确认：部分工程需运行前装依赖，无需编译 |
 | 17 | Git 与 SVN 同期支持（M3 一起交付） | 评审确认 |
 | 18 | 公共服务按**异步任务型**为主设计（task_id + 轮询；同步与回调模式也支持） | 确认：外部服务存在异步任务型 |
+| 19 | 新增**业务功能模块**章节（§1.1）：配置侧（执行机/镜像、工程、服务目录）+ 应用侧（环境准备、执行、结果采集） | 业务需求评审补充 |
+| 20 | **执行机自助注册**：控制台生成安装命令 + 一次性令牌，自动探测 Docker/Native 模式 | 支持测试同事自建执行机 |
+| 21 | **镜像库**：平台公共镜像 + 自定义镜像引用现成地址（M1 起）+ Dockerfile 构建（M4） | 确认：两种方式都要 |
+| 22 | 公共服务统一为**服务目录**：预制条目（服务器日志检查、精准测试初始化）+ 第三方注册；功能后端均为 HTTP API，平台不内置业务逻辑 | 确认：预制服务也以公共服务形态实现 |
+| 23 | **执行环境选择**：Profile 定默认（平台 Docker / 自建机），提交时可覆盖 | 应用侧环境准备需求 |
+| 24 | **轻量结果摘要**：内置解析 Robot/Pytest/JMeter/GTest 报告，控制台展示通过率与失败清单；深度分析仍归分析平台 | 确认：内置轻量摘要 |
 
 ## 1. 背景与目标
 
@@ -34,6 +40,27 @@
 **目标**：提供人工和流水线统一调用的自动化项目执行服务，完成源码版本固化、参数解析、运行资源调度、容器/原生进程执行、公共服务调用、状态追踪、取消、日志与原始产物交付。
 
 **明确不做**：多工程 DAG 编排、环境部署系统、测试结果深度分析、测试环境/IoT 设备/账号互斥管理、独立浏览器管理与 Selenium Grid、自动扩缩容、任务抢占、运行中容器跨节点迁移、测试执行中途断点续跑。上述能力由现有系统、测试人员或未来项目负责。
+
+### 1.1 业务功能模块（V2.1 新增）
+
+**配置侧（管理态）**：
+
+| 模块 | 内容 | 对应设计 |
+|---|---|---|
+| 执行机管理 | 平台 Docker 主机 + 测试同事自建机**自助注册**（控制台生成安装命令与令牌，首启自动探测 Docker/Native 模式，自声明资源与标签）；维护状态管理 | §4.9、§5、§8 |
+| 镜像管理 | 平台维护公共镜像库（Python/Robot/Chrome/JMeter 等）；自定义镜像：**引用现成地址即用**（M1 起），Dockerfile 隔离构建（M4） | §4.10、§5 `runtime_image` |
+| 自动化工程管理 | 测试同事自服务维护工程：仓库、镜像、prepare、执行命令与参数（标准 YAML 格式，§6）、资源、产物、服务绑定 | §6 Project/Profile |
+| 公共服务配置 | 统一**服务目录**：预制条目（服务器日志检查、精准测试初始化）+ 第三方注册扩展；参数 Schema、可见范围、绑定 | §10、§5 `service_catalog` |
+
+**应用侧（运行态）**：
+
+| 模块 | 内容 | 对应设计 |
+|---|---|---|
+| 执行环境准备 | 选平台 Docker 快速拉起，或跑在自己注册的执行机上（Profile 默认 + 提交时覆盖） | §6 `placement`、§8 |
+| 公共服务 + 工程执行 | before/during/after 服务调用与测试执行的线性生命周期 | §7 |
+| 结果采集 | 日志增量上传、原始产物收集、**轻量结果摘要**（通过率/失败清单）；深度分析归分析平台 | §12 |
+
+> 预制服务说明：服务器日志检查、精准测试初始化（调现有精准测试系统 API）均为服务目录预制条目，功能后端由服务提供方以 HTTP API 交付；平台核心只做登记、编排调用与状态追踪，不内置具体业务逻辑。
 
 ## 2. 已确认决策与遗留待定项
 
@@ -45,6 +72,9 @@
 | 并发与时长 | 常态约 50、峰值 ≤200；单任务最长约 48 小时（可按任务覆盖） |
 | 执行生命周期 | 单工程内部线性步骤；外部流水线处理跨工程依赖 |
 | 运行方式 | Docker 优先；`prepare` 步骤覆盖装依赖类工程；长期建议依赖烘进镜像提速 |
+| 执行环境选择 | Profile 定默认（平台 Docker / 自建机），提交时可覆盖 |
+| 自定义镜像 | 引用现成地址即用（M1 起）+ Dockerfile 构建（M4） |
+| 预制公共服务 | 服务器日志检查、精准测试初始化等以服务目录预制条目提供，后端为 HTTP API |
 | 浏览器 | 一个任务一个 Chrome；随镜像提供，默认 Headless |
 | 网络与 SSH | 主要访问被测平台，偶发 SSH；不固定测试到目标服务器 |
 | 源码 | 运行时按 Git commit / SVN revision 获取，不可变快照 + 缓存；不烘焙进镜像 |
@@ -65,7 +95,7 @@
 | 公司 SSO/LDAP 接入方式与凭据签发 | M4 认证授权前 |
 | 镜像仓库与构建服务现状（复用 Harbor？） | M1 镜像管理前 |
 | 代码仓库访问凭据托管方案（有无现成秘密管理） | M3 Source Manager 前 |
-| 公共服务各接口规范（收集后登记为 Service Registry 条目） | M3 前 |
+| 公共服务各接口规范（含日志检查、精准测试初始化后端的提供方与规范） | M3 前 |
 | 代表性验收工程清单（Robot+Chrome / Pytest / JMeter / GTest / SVN 各一） | M1/M3 验收前 |
 
 ## 3. 系统边界与总体架构
@@ -106,6 +136,10 @@ flowchart TB
 6. **JobExecutor**：统一 submit/status/cancel/collect 窄接口；Docker 与 Native 两实现；预留后端替换。
 7. **Public Service Adapter**：见 §10。
 8. **Execution/Artifact Service**：状态机、心跳对账、日志分片清单、产物清单、outbox 回调、结果交付。
+9. **Node Enrollment（V2.1）**：控制台生成安装命令与一次性令牌；Agent 首启注册，自动探测 Docker 可用性决定 Docker/Native 模式；自声明资源与标签；纳入心跳与维护管理。
+10. **Image Library（V2.1）**：公共镜像维护；自定义镜像登记（引用现成地址即用，M1）；Dockerfile 隔离构建、扫描、发布（M4）；Digest 固化。
+11. **Service Catalog（V2.1）**：预制与第三方服务的统一目录、参数 Schema、可见范围、绑定管理；平台不实现服务业务逻辑。
+12. **Result Summarizer（V2.1）**：按 `report_type` 解析常见报告格式（Robot/Pytest/JMeter/GTest），产出通过率与失败清单，供控制台展示与事件携带；解析失败不影响产物交付。
 
 ## 5. 数据模型（修订）
 
@@ -121,6 +155,10 @@ flowchart TB
 - `service_invocation(id, execution_id, service_ref, phase, external_task_id, status, request_ref, response_ref, started_at, ended_at)`
 - `execution_event(id, execution_id, attempt_id, event_type, payload, created_at)` — 索引 `(execution_id, created_at)`
 - `callback_delivery(id, execution_id, target_ref, event_type, attempt_count, next_retry_at, state)`
+- `node_enrollment_token(id, token_hash, department_id, created_by, expires_at, used_by_node_id)` — 自建机自助注册（V2.1）
+- `runtime_image(id, name, tag, digest, source, ref_uri, dockerfile_ref, department_id, owner, visibility, status, created_at)` — source: official / reference / build（V2.1）
+- `service_catalog(id, key, name, kind, mode, endpoint_ref, auth_ref, phases, params_schema, cleanup_ref, visibility, enabled)` — kind: preset / custom（V2.1）
+- `execution_result(id, execution_id, attempt_id, report_type, total, passed, failed, skipped, error, duration_s, failures_json, parsed_at)` — 轻量摘要（V2.1）
 
 约束：状态更新用版本号/CAS；预留与领取在同一事务原子完成；敏感凭据不进 `context_json`、日志、事件负载。
 
@@ -133,6 +171,9 @@ source:
   repository_ref: web-tests
 runtime:
   image: test-browser:stable
+placement:              # 执行环境：Profile 默认，提交时可覆盖
+  mode: platform_docker # platform_docker | own_node
+  node_labels: []       # own_node：限定自建机标签（默认本人全部机器）
 execution:
   prepare:             # 可选；装依赖类工程免改代码接入
     argv: [pip, install, -r, requirements.txt, -i, https://mirror.example/simple]
@@ -225,7 +266,7 @@ artifacts:
 
 ## 10. 公共服务集成（异步任务型为主）
 
-外部服务登记于 Service Registry：endpoint、认证引用、超时、**模式**（`sync` / `async_poll` / `async_callback`）、终态映射、清理方法。主路径 `async_poll`：
+所有公共服务（含预制）统一登记于**服务目录** `service_catalog`：endpoint、认证引用、超时、**模式**（`sync` / `async_poll` / `async_callback`）、终态映射、清理方法、可见范围。首批预制条目：`server-log-check`（服务器日志检查）、`precision-test-init`（精准测试初始化，调现有系统 API）；功能后端由服务提供方以 HTTP API 交付，平台只做登记、编排调用与追踪。主路径 `async_poll`：
 
 ```
 submit → {task_id} → 按 interval 轮询 status → 终态映射(SUCCEEDED/FAILED) → 超时上限
@@ -276,7 +317,8 @@ submit → {task_id} → 按 interval 轮询 status → 终态映射(SUCCEEDED/F
 - 容器挂载 `/workspace`（源码）、`/artifacts`（产物）、只读上下文文件。
 - **日志管道**：Agent 将 stdout/stderr 落本地文件，按 30s 或 5MB 切片，经预签名 URL 增量直传 MinIO（`logs/{execution_id}/{attempt_id}/`），维护 `log_manifest`；分区不丢（本地全量、恢复续传）；`GET /logs` 与控制台尾随读都基于已上传分片；终态确认后清本地。
 - 产物：框架原始文件（Robot 报告、JMeter jtl 等）终态化上传；清单含路径、大小、SHA256、类型；排除规则生效。
-- 执行结束发布 `execution.finalized` 事件 + 产物清单给分析平台；用例级解析、趋势、质量评估由分析平台负责。
+- **轻量结果摘要（V2.1）**：终态化后按 `report_type` 解析常见格式（Robot output.xml、Pytest junit.xml、JMeter jtl、GTest 输出），生成通过率与失败用例清单（`execution_result`），控制台直接展示；解析失败不影响交付，告警即可。
+- 执行结束发布 `execution.finalized` 事件 + 产物清单 + 摘要给分析平台；趋势、质量评估等深度分析由分析平台负责。
 - 日志脱敏（已知敏感值掩码）、访问控制、保留策略、总量上限。
 
 ## 13. 安全与非功能要求
@@ -310,19 +352,19 @@ submit → {task_id} → 按 interval 轮询 status → 终态映射(SUCCEEDED/F
 `control-plane/`、`agent/`、`shared/`、`web/`、`docs/`、`tests/` 骨架；数据模型迁移；OpenAPI 草案；状态机与 Agent 协议定义；契约测试；Docker Compose 本地环境（PG + MinIO + 控制面 + Agent + Demo 容器）。
 
 ### M1：最小端到端闭环 + 最小控制台
-项目/Profile CRUD；提交/查询；DB 队列（暂不含部门公平）；单节点 Agent Docker 执行；日志增量上传与查看；产物上传下载。**控制台最小版**：提交表单（schema 自动渲染）、执行列表、详情（时间线 + 日志 + 产物）。
+项目/Profile CRUD；提交/查询；DB 队列（暂不含部门公平）；单节点 Agent Docker 执行；日志增量上传与查看；产物上传下载；**自定义镜像引用登记**（填地址即用）。**控制台最小版**：提交表单（schema 自动渲染）、执行列表、详情（时间线 + 日志 + 产物）。
 验收：Robot+Headless Chrome 与普通 Python 任务各演示一次；异步返回；版本精确固化；报告可下载；网页可全程跟踪。
 
 ### M2：多节点调度与可靠性
-节点注册/心跳、CPU/内存预留、标签过滤、项目并发 + **部门配额与公平轮询**、priority、取消、Agent 重启恢复、控制面重启对账、**RECONCILING 收敛与 mark-lost**、**维护排水**、看门狗死线。
+节点注册/心跳、CPU/内存预留、标签过滤、项目并发 + **部门配额与公平轮询**、priority、取消、Agent 重启恢复、控制面重启对账、**RECONCILING 收敛与 mark-lost**、**维护排水**、看门狗死线、**节点自助注册**（安装命令+令牌，自动探测 Docker/Native）、**执行环境选择**（平台 Docker / 自建机，Profile 默认 + 提交覆盖）。
 验收：重复提交/启动不重复执行；断网不盲目重跑；维护期不接新任务且能限期排空；分区任务最终有终态。
 
 ### M3：工程接入与公共服务
-Git+SVN 快照与缓存、prepare 步骤、参数映射与预设、公共服务 async_poll/sync/回调 + before/during/after + 清理、Native Agent、SSH 凭据引用。
+Git+SVN 快照与缓存、prepare 步骤、参数映射与预设、公共服务 async_poll/sync/回调 + before/during/after + 清理、**服务目录**（预制条目：服务器日志检查、精准测试初始化；第三方注册）、**轻量结果摘要解析器**（Robot/Pytest/JMeter/GTest → 通过率/失败清单）、Native Agent、SSH 凭据引用。
 验收：既有 Robot 工程（含一个装依赖工程、一个 SVN 工程）不改主体代码接入；公共服务开通-清理全程可追踪。
 
 ### M4：流水线集成、运维、完整控制台与压测
-SSO 认证授权、部门隔离与审计、回调 outbox、分析平台通知、镜像构建接入、监控告警；控制台补全（节点监控、服务绑定管理、配额/审计视图）。
+SSO 认证授权、部门隔离与审计、回调 outbox、分析平台通知、**Dockerfile 构建流水线**（隔离构建、扫描、发布）与**镜像库管理完善**（公共/自定义/构建来源）、监控告警；控制台补全（节点监控、镜像库、服务目录管理、配额/审计视图）。
 验收：10/30/50 并发逐级压测并规划 200；长任务、控制面重启、Agent 重启、Host 故障、取消、产物上传失败故障注入通过。
 
 ## 16. 实现工作约束
@@ -340,6 +382,6 @@ SSO 认证授权、部门隔离与审计、回调 outbox、分析平台通知、
 - [ ] SSO/LDAP 接入方式与凭据签发流程
 - [ ] 镜像仓库与构建服务现状确认
 - [ ] 秘密管理设施是否已有（否则最小实现：PG 加密列 + 信封加密）
-- [ ] 公共服务各接口规范收集（submit/poll/cleanup/认证）
+- [ ] 公共服务各接口规范收集（submit/poll/cleanup/认证；含日志检查、精准测试初始化后端的提供方与规范）
 - [ ] 代表性验收工程确定（Robot+Chrome、Pytest、JMeter、GTest、SVN、装依赖型各一）
 - [ ] 节点资源规格与 PoC 机器数量
