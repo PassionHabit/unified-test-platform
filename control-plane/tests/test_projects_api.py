@@ -83,7 +83,6 @@ class TestAgentAndNodes:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["assignments"] == []
         assert body["poll_after_s"] >= 1
 
         nodes = client.get("/api/v1/nodes").json()
@@ -91,20 +90,29 @@ class TestAgentAndNodes:
         assert len(mine) == 1
         assert mine[0]["labels"] == ["web-test"]
 
+    def test_zero_capacity_node_claims_nothing(self, client):
+        resp = client.post(
+            "/agent/v1/poll",
+            json={"agent_id": "agent-zero-cap", "node_type": "docker",
+                  "cpu_total": 0, "memory_mb_total": 0},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["assignments"] == []
+
     def test_agent_poll_heartbeat_refresh(self, client):
         for _ in range(2):
             assert client.post("/agent/v1/poll", json={"agent_id": "agent-hb"}).status_code == 200
         nodes = [n for n in client.get("/api/v1/nodes").json() if n["agent_id"] == "agent-hb"]
         assert len(nodes) == 1  # 幂等注册，不重复建节点
 
-    def test_attempt_status_accepted(self, client):
+    def test_attempt_status_unknown_404(self, client):
         resp = client.post(
-            "/agent/v1/attempts/1/status",
+            "/agent/v1/attempts/999999/status",
             json={
                 "report_id": "r-1",
-                "attempt_id": "1",
+                "attempt_id": "999999",
                 "execution_id": "1",
                 "status": "RUNNING",
             },
         )
-        assert resp.status_code == 202
+        assert resp.status_code == 404

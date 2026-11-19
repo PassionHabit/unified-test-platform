@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...db import get_db
-from ...models import Execution, ExecutionEvent, ExecutionProfile, Project
+from ...models import Artifact, Execution, ExecutionEvent, ExecutionProfile, ExecutionResult, LogManifest, Project
 from ...schemas import CancelOut, CallerInfo, ExecutionCreate, ExecutionOut
 from utp_shared.events import EventType
 from utp_shared.states import (
@@ -161,6 +161,11 @@ def cancel_execution(execution_id: int, db: Session = Depends(get_db)) -> Cancel
         execution.failure_reason = FailureReason.CANCELLED_BY_USER.value
         execution.ended_at = now
         _add_event(db, execution.id, EventType.STATUS_CHANGED.value, {"status": execution.status})
+    elif execution.status in (ExecutionStatus.PREPARING.value, ExecutionStatus.STARTING.value,
+                              ExecutionStatus.RUNNING.value, ExecutionStatus.RECONCILING.value):
+        assert_execution_transition(execution.status, ExecutionStatus.CANCELLING.value)
+        execution.status = ExecutionStatus.CANCELLING.value
+        _add_event(db, execution.id, EventType.CANCEL_REQUESTED.value, {})
     else:
         _add_event(db, execution.id, EventType.CANCEL_REQUESTED.value, {})
     db.commit()
@@ -171,20 +176,119 @@ def cancel_execution(execution_id: int, db: Session = Depends(get_db)) -> Cancel
     )
 
 
-# ---- M1/M3 交付的端点：契约先行，明确 501 ----
-@router.get("/executions/{execution_id}/events", summary="事件流（M1）")
-def list_events(execution_id: int, db: Session = Depends(get_db)) -> None:
+# ---- 事件 / 日志 / 产物（M1 实现） ----
+@router.get("/executions/{execution_id}/events", summary="事件流")
+def list_events(execution_id: int, limit: int = 100, db: Session = Depends(get_db)) -> list[dict]:
     _get_or_404(db, execution_id)
-    raise HTTPException(status_code=501, detail="events endpoint lands in M1")
+    limit = max(1, min(limit, 500))
+    events = (
+        db.execute(
+            select(ExecutionEvent)
+            .where(ExecutionEvent.execution_id == execution_id)
+            .order_by(ExecutionEvent.id.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": e.id,
+            "event_type": e.event_type,
+            "payload": e.payload,
+            "created_at": e.created_at,
+        }
+        for e in reversed(events)
+    ]
 
 
-@router.get("/executions/{execution_id}/logs", summary="日志分片读取（M1）")
-def get_logs(execution_id: int, db: Session = Depends(get_db)) -> None:
+def _latest_attempt(db: Session, execution_id: int):
+    from ...models import ExecutionAttempt
+
+    return (
+        db.execute(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.execution_id == execution_id)
+            .order_by(ExecutionAttempt.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
+@router.get("/executions/{execution_id}/logs", summary="日志：已上传分片读取")
+def get_logs(
+    execution_id: int,
+    stream: str = "stdout",
+    chunk: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import PlainTextResponse
+
     _get_or_404(db, execution_id)
-    raise HTTPException(status_code=501, detail="logs endpoint lands in M1")
+    attempt = _latest_attempt(db, execution_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="no attempt yet")
+    manifest = db.get(LogManifest, attempt.id)
+    if manifest is None or manifest.chunk_count == 0:
+        raise HTTPException(status_code=404, detail="no log chunks uploaded yet")
+
+    from ...storage import get_storage, StorageError
+
+    storage = get_storage()
+    base = f"executions/{execution_id}/attempts/{attempt.id}"
+    if chunk is None:
+        chunks = list(range(manifest.chunk_count))
+    else:
+        if chunk < 0 or chunk >= manifest.chunk_count:
+            raise HTTPException(status_code=404, detail=f"chunk out of range 0..{manifest.chunk_count - 1}")
+        chunks = [chunk]
+    parts = []
+    for idx in chunks:
+        key = f"{base}/{stream}/{idx:06d}.log"
+        try:
+            parts.append(storage.get_bytes(key).decode("utf-8", "replace"))
+        except StorageError:
+            parts.append(f"\n[chunk {idx} unavailable]\n")
+    return PlainTextResponse("".join(parts))
 
 
-@router.get("/executions/{execution_id}/artifacts", summary="产物清单（M1）")
-def get_artifacts(execution_id: int, db: Session = Depends(get_db)) -> None:
+@router.get("/executions/{execution_id}/artifacts", summary="产物清单（可附预签名下载链接）")
+def get_artifacts(execution_id: int, download: bool = False, db: Session = Depends(get_db)) -> list[dict]:
     _get_or_404(db, execution_id)
-    raise HTTPException(status_code=501, detail="artifacts endpoint lands in M1")
+    items = db.execute(select(Artifact).where(Artifact.execution_id == execution_id)).scalars().all()
+    result = []
+    for a in items:
+        item = {
+            "path": a.path,
+            "size": a.size,
+            "sha256": a.sha256,
+            "content_type": a.content_type,
+            "key": a.storage_uri,
+        }
+        if download:
+            from ...storage import get_storage
+
+            item["download_url"] = get_storage().presign_get(a.storage_uri, expires_s=1800)
+        result.append(item)
+    return result
+
+
+@router.get("/executions/{execution_id}/result", summary="轻量结果摘要")
+def get_result(execution_id: int, db: Session = Depends(get_db)) -> dict:
+    _get_or_404(db, execution_id)
+    result = db.execute(
+        select(ExecutionResult).where(ExecutionResult.execution_id == execution_id)
+    ).scalars().first()
+    if result is None:
+        raise HTTPException(status_code=404, detail="no result summary (not parsed or NOT_EVALUATED)")
+    return {
+        "report_type": result.report_type,
+        "total": result.total,
+        "passed": result.passed,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "failures": (result.failures_json or {}).get("cases", []),
+        "parsed_at": result.parsed_at,
+    }

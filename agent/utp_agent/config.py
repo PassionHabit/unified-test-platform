@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     labels: str = ""  # 逗号分隔
     agent_version: str = "0.1.0"
     poll_timeout_s: float = 35.0
+    work_dir: str = "~/.utp-agent"
 
 
 @lru_cache

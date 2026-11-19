@@ -24,6 +24,11 @@ class ControlPlaneClient:
             timeout=settings.poll_timeout_s + 5, trust_env=False
         )
 
+    def _request_json(self, method: str, path: str, json: Optional[dict] = None) -> dict:
+        resp = self._client.request(method, f"{self.base_url}{path}", json=json)
+        resp.raise_for_status()
+        return resp.json()
+
     def poll(
         self,
         agent_id: str,

@@ -95,12 +95,19 @@ class TestCancel:
         assert client.post("/api/v1/executions/99999/cancel").status_code == 404
 
 
-class TestDeferredEndpoints:
-    def test_events_501(self, client, seeded_project):
+class TestArtifactEndpoints:
+    def test_events_returns_list(self, client, seeded_project):
         exec_id = submit(client).json()["id"]
-        assert client.get(f"/api/v1/executions/{exec_id}/events").status_code == 501
+        resp = client.get(f"/api/v1/executions/{exec_id}/events")
+        assert resp.status_code == 200
+        types = [e["event_type"] for e in resp.json()]
+        assert "execution.created" in types
 
-    def test_logs_and_artifacts_501(self, client, seeded_project):
+    def test_logs_before_attempt_404(self, client, seeded_project):
         exec_id = submit(client).json()["id"]
-        assert client.get(f"/api/v1/executions/{exec_id}/logs").status_code == 501
-        assert client.get(f"/api/v1/executions/{exec_id}/artifacts").status_code == 501
+        assert client.get(f"/api/v1/executions/{exec_id}/logs").status_code == 404
+
+    def test_artifacts_empty_list(self, client, seeded_project):
+        exec_id = submit(client).json()["id"]
+        resp = client.get(f"/api/v1/executions/{exec_id}/artifacts")
+        assert resp.status_code == 200 and resp.json() == []
