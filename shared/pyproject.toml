@@ -1,0 +1,13 @@
+[project]
+name = "utp-shared"
+version = "0.1.0"
+description = "Unified Test Platform 共享契约：状态机、事件、Agent 协议"
+requires-python = ">=3.9"
+dependencies = ["pydantic>=2.7"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["utp_shared"]

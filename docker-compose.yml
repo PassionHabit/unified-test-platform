@@ -1,0 +1,78 @@
+# M0 本地开发环境：PostgreSQL + MinIO + 控制面 + Agent
+# 说明：M0 在无 Docker 环境下用 SQLite 验证过（make dev-db / make test）；
+# 本 compose 待有 Docker 的机器上验证（见 docs/automation_execution_platform_design_v2.md §15 M0）。
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: utp
+      POSTGRES_PASSWORD: utp
+      POSTGRES_DB: utp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U utp -d utp"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: utp
+      MINIO_ROOT_PASSWORD: utp-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "mc alias set local http://minio:9000 utp utp-secret &&
+             mc mb -p --ignore-existing local/utp"
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.controlplane
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+psycopg2://utp:utp@db:5432/utp
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: utp
+      S3_SECRET_KEY: utp-secret
+      S3_BUCKET: utp
+    ports:
+      - "8000:8000"
+    command: sh -c "alembic upgrade head && uvicorn utp_control.main:app --host 0.0.0.0 --port 8000"
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    depends_on:
+      - control-plane
+    environment:
+      UTP_CONTROL_URL: http://control-plane:8000
+      UTP_AGENT_NAME: demo-agent-1
+
+volumes:
+  pgdata:
+  miniodata:

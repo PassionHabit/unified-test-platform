@@ -11,6 +11,20 @@
 
 PostgreSQL · MinIO · FastAPI (Python) · Docker Agent · React + TypeScript + Ant Design
 
+## 快速开始
+
+```bash
+make setup      # 建 .venv 并安装 shared / control-plane / agent
+make test       # 控制面测试（SQLite + Alembic 真实迁移）
+make agent-test # Agent 协议测试
+make dev-db     # 本地 SQLite 开发库
+make dev        # 启动控制面（http://localhost:8000/docs）
+make smoke      # 端到端冒烟（另开终端，服务启动后执行）
+make compose-up # PG + MinIO + 控制面 + Agent（需 Docker）
+```
+
+无 Docker 环境时走 SQLite 路线（make dev-db / make dev / make smoke）；compose 文件已备好，待有 Docker 的机器验证。
+
 ## 状态
 
-方案设计阶段（M0 未开始）。项目管理看板：[GitHub Project #1](https://github.com/users/PassionHabit/projects/1)
+**M0 已完成**（骨架 + 数据模型 + API 契约 + 状态机 + 48 项测试 + SQLite 冒烟）。下一步 M1：端到端执行闭环 + 最小控制台。项目管理看板：[GitHub Project #1](https://github.com/users/PassionHabit/projects/1)

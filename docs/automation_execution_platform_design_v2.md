@@ -74,7 +74,7 @@
 | 运行方式 | Docker 优先；`prepare` 步骤覆盖装依赖类工程；长期建议依赖烘进镜像提速 |
 | 执行环境选择 | Profile 定默认（平台 Docker / 自建机），提交时可覆盖 |
 | 自定义镜像 | 引用现成地址即用（M1 起）+ Dockerfile 构建（M4） |
-| 预制公共服务 | 服务器日志检查、精准测试初始化等以服务目录预制条目提供，后端为 HTTP API |
+| 预制公共服务 | **延后接入**：先提供管理员配置界面；日志检查/精准测试初始化待接口规范就绪后登记 |
 | 浏览器 | 一个任务一个 Chrome；随镜像提供，默认 Headless |
 | 网络与 SSH | 主要访问被测平台，偶发 SSH；不固定测试到目标服务器 |
 | 源码 | 运行时按 Git commit / SVN revision 获取，不可变快照 + 缓存；不烘焙进镜像 |
@@ -266,7 +266,7 @@ artifacts:
 
 ## 10. 公共服务集成（异步任务型为主）
 
-所有公共服务（含预制）统一登记于**服务目录** `service_catalog`：endpoint、认证引用、超时、**模式**（`sync` / `async_poll` / `async_callback`）、终态映射、清理方法、可见范围。首批预制条目：`server-log-check`（服务器日志检查）、`precision-test-init`（精准测试初始化，调现有系统 API）；功能后端由服务提供方以 HTTP API 交付，平台只做登记、编排调用与追踪。主路径 `async_poll`：
+所有公共服务（含预制）统一登记于**服务目录** `service_catalog`：endpoint、认证引用、超时、**模式**（`sync` / `async_poll` / `async_callback`）、终态映射、清理方法、可见范围。服务条目由**管理员在目录中配置登记**（含第三方扩展）；服务器日志检查、精准测试初始化等预制条目待接口规范就绪后接入。平台核心只做登记、编排调用与状态追踪，不内置服务业务逻辑。主路径 `async_poll`：
 
 ```
 submit → {task_id} → 按 interval 轮询 status → 终态映射(SUCCEEDED/FAILED) → 超时上限
@@ -360,7 +360,7 @@ submit → {task_id} → 按 interval 轮询 status → 终态映射(SUCCEEDED/F
 验收：重复提交/启动不重复执行；断网不盲目重跑；维护期不接新任务且能限期排空；分区任务最终有终态。
 
 ### M3：工程接入与公共服务
-Git+SVN 快照与缓存、prepare 步骤、参数映射与预设、公共服务 async_poll/sync/回调 + before/during/after + 清理、**服务目录**（预制条目：服务器日志检查、精准测试初始化；第三方注册）、**轻量结果摘要解析器**（Robot/Pytest/JMeter/GTest → 通过率/失败清单）、Native Agent、SSH 凭据引用。
+Git+SVN 快照与缓存、prepare 步骤、参数映射与预设、公共服务 async_poll/sync/回调 + before/during/after + 清理、**服务目录与管理界面**（管理员配置登记；日志检查、精准测试初始化等预制条目延后接入）、**轻量结果摘要解析器**（Robot/Pytest/JMeter/GTest → 通过率/失败清单）、Native Agent、SSH 凭据引用。
 验收：既有 Robot 工程（含一个装依赖工程、一个 SVN 工程）不改主体代码接入；公共服务开通-清理全程可追踪。
 
 ### M4：流水线集成、运维、完整控制台与压测
