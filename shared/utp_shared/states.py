@@ -87,8 +87,9 @@ EXECUTION_TRANSITIONS: dict = {
 }
 
 ATTEMPT_TRANSITIONS: dict = {
+    # CREATED 可达 LOST：分配后节点即失联（未确认启动）的确认丢失路径
     AttemptStatus.CREATED.value: frozenset(
-        {AttemptStatus.STARTING.value, AttemptStatus.CANCELLED.value}
+        {AttemptStatus.STARTING.value, AttemptStatus.LOST.value, AttemptStatus.CANCELLED.value}
     ),
     AttemptStatus.STARTING.value: frozenset(
         {AttemptStatus.RUNNING.value, AttemptStatus.LOST.value, AttemptStatus.CANCELLED.value}
