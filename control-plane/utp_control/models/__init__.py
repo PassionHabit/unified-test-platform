@@ -9,7 +9,7 @@ from .execution import (
     ExecutionResult,
 )
 from .infra import NodeEnrollmentToken, ResourceReservation, WorkerNode
-from .org import Department, ExecutionProfile, Project, RuntimeImage
+from .org import ApiToken, Department, ExecutionProfile, Project, RuntimeImage
 from .services import SecretRef, ServiceCatalog, ServiceInvocation
 
 __all__ = [
@@ -32,4 +32,5 @@ __all__ = [
     "ServiceCatalog",
     "ServiceInvocation",
     "SecretRef",
+    "ApiToken",
 ]

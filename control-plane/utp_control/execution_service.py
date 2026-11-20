@@ -204,6 +204,16 @@ def finalize_execution(
     except Exception:
         pass
 
+    # 回调 outbox 入队（至少一次投递；白名单外目标直接 blocked）
+    callback_ref = (execution.context_json or {}).get("callback_ref")
+    if callback_ref:
+        try:
+            from .outbox import enqueue_callback
+
+            enqueue_callback(db, execution.id, "execution.finalized", callback_ref)
+        except Exception:
+            pass
+
 
 def apply_attempt_report(db: Session, report) -> dict:
     """Agent 状态上报的幂等处理（迟到/重复事件容忍）。"""

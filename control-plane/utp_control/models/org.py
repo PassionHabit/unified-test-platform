@@ -73,3 +73,19 @@ class RuntimeImage(Base, CreatedAtMixin):
     owner: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
     visibility: Mapped[str] = mapped_column(sa.String(20), default="department", nullable=False)
     status: Mapped[str] = mapped_column(sa.String(20), default="active", nullable=False)
+
+
+class ApiToken(Base, CreatedAtMixin):
+    """API 令牌（M4）：哈希存储，角色/部门绑定。"""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(sa.String(100), unique=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(sa.String(64), unique=True, nullable=False)
+    role: Mapped[str] = mapped_column(sa.String(20), default="human", nullable=False)
+    department_id: Mapped[Optional[int]] = mapped_column(
+        sa.ForeignKey("departments.id"), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)

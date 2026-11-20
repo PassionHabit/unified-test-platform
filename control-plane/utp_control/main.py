@@ -57,8 +57,16 @@ async def lifespan(app: FastAPI):
 
         thread = threading.Thread(target=_loop, daemon=True, name="utp-reconciler")
         thread.start()
+
+    # 回调 outbox 投递线程（M4）
+    from .db import get_sessionmaker as _gsm
+    from .outbox import start_outbox_worker
+
+    outbox_stop = start_outbox_worker(_gsm)
+
     yield
     stop["flag"] = True
+    outbox_stop.set()
 
 
 def create_app() -> FastAPI:

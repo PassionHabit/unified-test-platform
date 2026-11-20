@@ -179,6 +179,16 @@ def cancel_execution(execution_id: int, db: Session = Depends(get_db)) -> Cancel
         execution.failure_reason = FailureReason.CANCELLED_BY_USER.value
         execution.ended_at = now
         _add_event(db, execution.id, EventType.STATUS_CHANGED.value, {"status": execution.status})
+        _add_event(db, execution.id, EventType.EXECUTION_FINALIZED.value, {"status": execution.status})
+        # QUEUED 快速路径也入队回调：流水线需要知道任务未执行
+        callback_ref = (execution.context_json or {}).get("callback_ref")
+        if callback_ref:
+            try:
+                from ...outbox import enqueue_callback
+
+                enqueue_callback(db, execution.id, "execution.finalized", callback_ref)
+            except Exception:
+                pass
     elif execution.status in (ExecutionStatus.PREPARING.value, ExecutionStatus.STARTING.value,
                               ExecutionStatus.RUNNING.value, ExecutionStatus.RECONCILING.value):
         assert_execution_transition(execution.status, ExecutionStatus.CANCELLING.value)

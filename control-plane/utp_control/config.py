@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     reconcile_enabled: bool = True
     # 秘密引用加密键（M3）；生产必须显式设置
     secret_key: str = ""
+    # 认证（M4）：生产必须开启；关闭时全部请求视为 admin（本地开发）
+    auth_enabled: bool = False
+    # 回调白名单（M4）：逗号分隔 URL 前缀；空 = 禁止一切回调（防 SSRF）
+    callback_allowlist: str = ""
+    outbox_interval_s: int = 10
 
 
 @lru_cache
